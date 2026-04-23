@@ -67,7 +67,7 @@ app.set('io', io);
 // ============================================
 
 mongoose
-  .connect(process.env.MONGODB || process.env.MONGO_URI || "mongodb+srv://defsumon_db_user:u8ysW9CrxAaLoanE@cluster0.3m2ssty.mongodb.net/bus_tracker")
+  .connect(process.env.MONGODB)
   .then(() => {
     console.log("✅ MongoDB connected successfully");
     console.log(`📊 Database: ${mongoose.connection.name}`);
