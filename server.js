@@ -117,6 +117,14 @@ app.get("/health", (req, res) => {
   res.status(statusCode).json(health);
 });
 
+app.get("/tcp-status", (req, res) => {
+  res.json({
+    success: true,
+    timestamp: new Date(),
+    data: getTcpServerStatus(),
+  });
+});
+
 // ============================================
 // API ROUTES
 // ============================================
@@ -565,10 +573,32 @@ function sendGT06Response(socket, msgType, serial = 0x0001) {
 const GPS_PORT = parseInt(process.env.TCP_PORT) || 5050;
 const gpsClients = new Map();
 
+function getTcpServerStatus() {
+  const addressInfo = tcpServer.address();
+  return {
+    listening: tcpServer.listening,
+    host: addressInfo && typeof addressInfo === "object" ? addressInfo.address : "0.0.0.0",
+    port: addressInfo && typeof addressInfo === "object" ? addressInfo.port : GPS_PORT,
+    activeConnections: gpsClients.size,
+    connectedDevices: Array.from(gpsClients.entries()).map(([client, imei]) => ({
+      client,
+      imei,
+    })),
+  };
+}
+
+function logTcpServerStatus(reason) {
+  const status = getTcpServerStatus();
+  console.log(
+    `📡 TCP Status [${reason}] -> listening=${status.listening}, host=${status.host}, port=${status.port}, activeConnections=${status.activeConnections}`
+  );
+}
+
 const tcpServer = net.createServer((socket) => {
   const clientId = `${socket.remoteAddress}:${socket.remotePort}`;
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   console.log('📡 New device connected from:', socket.remoteAddress);
+  console.log('🧮 Active GPS TCP connections:', gpsClients.size + 1);
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   
   let deviceIMEI = null;
@@ -615,6 +645,7 @@ const tcpServer = net.createServer((socket) => {
           deviceIMEI = parsed.imei;
           gpsClients.set(clientId, deviceIMEI);
           console.log('✅ Device logged in:', deviceIMEI);
+          logTcpServerStatus('device-login');
           
           // Send login response
           sendGT06Response(socket, 0x01, 0x0001);
@@ -708,6 +739,8 @@ const tcpServer = net.createServer((socket) => {
     }
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     gpsClients.delete(clientId);
+    console.log('🧮 Active GPS TCP connections:', gpsClients.size);
+    logTcpServerStatus('device-disconnect');
   });
   
   // Set socket timeout
@@ -720,14 +753,20 @@ const tcpServer = net.createServer((socket) => {
 
 tcpServer.on('error', (error) => {
   console.error('❌ TCP Server error:', error.message);
+  logTcpServerStatus('server-error');
   if (error.code === 'EADDRINUSE') {
     console.error(`❌ Port ${GPS_PORT} is already in use!`);
     process.exit(1);
   }
 });
 
+tcpServer.on('close', () => {
+  logTcpServerStatus('server-closed');
+});
+
 tcpServer.listen(GPS_PORT, '0.0.0.0', () => {
   console.log(`📡 GPS TCP Server listening on 0.0.0.0:${GPS_PORT}`);
+  logTcpServerStatus('server-started');
 });
 
 // ============================================
