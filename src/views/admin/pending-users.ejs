@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title><%= title %></title>
+    <style>
+      :root {
+        --bg: #0d1b2a;
+        --card: #1b263b;
+        --text: #eaf1ff;
+        --muted: #9db1cc;
+        --line: #2d3f5b;
+        --primary: #42a5f5;
+        --success: #2e7d32;
+        --danger: #c62828;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: radial-gradient(circle at 20% 0%, #1f3a5f, var(--bg) 40%);
+        color: var(--text);
+      }
+
+      .wrap {
+        max-width: 1100px;
+        margin: 28px auto;
+        padding: 0 16px;
+      }
+
+      h1 {
+        margin: 0 0 14px;
+        font-size: 26px;
+      }
+
+      .meta {
+        color: var(--muted);
+        margin-bottom: 18px;
+      }
+
+      .notice {
+        background: rgba(66, 165, 245, 0.14);
+        border: 1px solid rgba(66, 165, 245, 0.35);
+        color: #cbe7ff;
+        border-radius: 10px;
+        padding: 10px 12px;
+        margin-bottom: 16px;
+      }
+
+      .error {
+        background: rgba(198, 40, 40, 0.2);
+        border-color: rgba(198, 40, 40, 0.4);
+        color: #ffd7d7;
+      }
+
+      .table-wrap {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        overflow: hidden;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+
+      th,
+      td {
+        padding: 12px 10px;
+        border-bottom: 1px solid var(--line);
+        text-align: left;
+        vertical-align: top;
+      }
+
+      th {
+        color: #d5e7ff;
+        font-size: 13px;
+        letter-spacing: 0.2px;
+      }
+
+      td {
+        color: var(--text);
+        font-size: 14px;
+      }
+
+      tr:last-child td {
+        border-bottom: none;
+      }
+
+      .actions {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      .btn {
+        border: none;
+        border-radius: 8px;
+        padding: 8px 12px;
+        color: #fff;
+        cursor: pointer;
+        font-weight: 600;
+      }
+
+      .btn-approve {
+        background: var(--success);
+      }
+
+      .btn-reject {
+        background: var(--danger);
+      }
+
+      .empty {
+        padding: 24px;
+        text-align: center;
+        color: var(--muted);
+      }
+
+      .mobile-label {
+        display: none;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      @media (max-width: 860px) {
+        table,
+        thead,
+        tbody,
+        th,
+        td,
+        tr {
+          display: block;
+        }
+
+        thead {
+          display: none;
+        }
+
+        tr {
+          border-bottom: 1px solid var(--line);
+          padding: 10px;
+        }
+
+        tr:last-child {
+          border-bottom: none;
+        }
+
+        td {
+          border: none;
+          padding: 6px 0;
+        }
+
+        .mobile-label {
+          display: inline-block;
+          width: 92px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="wrap">
+      <h1>Pending User Approval</h1>
+      <div class="meta">Review verified accounts and approve access.</div>
+
+      <% if (success) { %>
+      <div class="notice"><%= success %></div>
+      <% } %>
+
+      <% if (error) { %>
+      <div class="notice error"><%= error %></div>
+      <% } %>
+
+      <div class="table-wrap">
+        <% if (!users || users.length === 0) { %>
+        <div class="empty">No pending users found.</div>
+        <% } else { %>
+        <table>
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Phone</th>
+              <th>Faculty</th>
+              <th>Department</th>
+              <th>Session</th>
+              <th>Joined</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            <% users.forEach(function(user) { %>
+            <tr>
+              <td><span class="mobile-label">Name</span><%= user.name %></td>
+              <td><span class="mobile-label">Phone</span><%= user.phoneNumber %></td>
+              <td><span class="mobile-label">Faculty</span><%= user.faculty %></td>
+              <td><span class="mobile-label">Department</span><%= user.department %></td>
+              <td><span class="mobile-label">Session</span><%= user.session %></td>
+              <td>
+                <span class="mobile-label">Joined</span>
+                <%= new Date(user.createdAt).toLocaleString() %>
+              </td>
+              <td>
+                <div class="actions">
+                  <form method="post" action="/admin/users/<%= user._id %>/approve">
+                    <button class="btn btn-approve" type="submit">Approve</button>
+                  </form>
+                  <form method="post" action="/admin/users/<%= user._id %>/reject">
+                    <button class="btn btn-reject" type="submit">Reject</button>
+                  </form>
+                </div>
+              </td>
+            </tr>
+            <% }) %>
+          </tbody>
+        </table>
+        <% } %>
+      </div>
+    </main>
+  </body>
+</html>
