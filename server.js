@@ -467,6 +467,7 @@ function parseGT06Data(buffer) {
         console.log('🛰️ Satellites:', satCount);
         console.log('🧭 Hemisphere:', isSouth ? 'S' : 'N', isWest ? 'W' : 'E');
         console.log(`📍 Parsed - Lat: ${latitude.toFixed(6)}, Lng: ${longitude.toFixed(6)}, Speed: ${speed} km/h`);
+        console.log(`🧭 GPS Coordinates -> Latitude: ${latitude.toFixed(6)}, Longitude: ${longitude.toFixed(6)}`);
         
         // Validate coordinates
         if (Math.abs(latitude) > 90 || Math.abs(longitude) > 180) {
@@ -657,6 +658,7 @@ const tcpServer = net.createServer((socket) => {
           }
           
           console.log(`📍 ${deviceIMEI} → Lat:${parsed.latitude.toFixed(6)} Lng:${parsed.longitude.toFixed(6)} Speed:${parsed.speed}km/h Satellites:${parsed.satellites}`);
+          console.log(`🧭 GPS Update (${deviceIMEI}) -> Latitude: ${parsed.latitude.toFixed(6)}, Longitude: ${parsed.longitude.toFixed(6)}`);
           
           try {
             // Save to MongoDB
