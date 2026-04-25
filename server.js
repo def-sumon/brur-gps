@@ -345,6 +345,32 @@ io.on("connection", (socket) => {
     }
   });
   
+  // Send latest location for every known device (initial map load)
+  socket.on("request-all-locations", async () => {
+    try {
+      const deviceIds = await Location.distinct("deviceId");
+      const locs = await Promise.all(
+        deviceIds.map(async (deviceId) => {
+          const loc = await Location.findOne({ deviceId })
+            .sort({ time: -1 })
+            .lean();
+          if (!loc) return null;
+          return {
+            deviceId,
+            latitude: loc.latitude,
+            longitude: loc.longitude,
+            speed: loc.speed,
+            satellites: loc.satellites,
+            timestamp: loc.time,
+          };
+        })
+      );
+      socket.emit("all-locations", locs.filter(Boolean));
+    } catch (error) {
+      console.error("Error fetching all locations:", error);
+    }
+  });
+
   // Send active alerts
   socket.on("request-active-alerts", async () => {
     try {
@@ -381,23 +407,26 @@ function parseGT06Data(buffer) {
     console.log('📦 Raw hex:', hex);
     
     // Check for start markers (0x7878 or 0x7979)
-    if (!hex.startsWith('7878') && !hex.startsWith('7979')) {
+    const isShortHeader = buffer[0] === 0x78 && buffer[1] === 0x78;
+    const isLongHeader = buffer[0] === 0x79 && buffer[1] === 0x79;
+    if (!isShortHeader && !isLongHeader) {
       console.warn('⚠️ Invalid start marker');
       return null;
     }
     
-    const length = buffer.readUInt8(2);
-    const msgType = buffer.readUInt8(3);
+    const shift = isShortHeader ? 0 : 1;
+    const length = isShortHeader ? buffer.readUInt8(2) : buffer.readUInt16BE(2);
+    const msgType = buffer.readUInt8(3 + shift);
     
     console.log(`📋 Message type: 0x${msgType.toString(16).padStart(2, '0')}, Length: ${length}`);
     
     // Login packet (type 0x01)
     if (msgType === 0x01) {
-      if (buffer.length < 12) {
+      if (buffer.length < 12 + shift) {
         console.error('❌ Login packet too short');
         return null;
       }
-      const imei = buffer.slice(4, 12).toString('hex');
+      const imei = buffer.slice(4 + shift, 12 + shift).toString('hex');
       console.log('🔑 IMEI detected:', imei);
       return { type: 'login', imei: imei };
     }
@@ -406,21 +435,21 @@ function parseGT06Data(buffer) {
     if (msgType === 0x22 || msgType === 0x12 || msgType === 0x16) {
       try {
         // Check minimum packet size
-        if (buffer.length < 24) {
+        if (buffer.length < 24 + shift) {
           console.error('❌ GPS packet too short');
           return null;
         }
         
         // Parse datetime
-        const year = 2000 + buffer.readUInt8(4);
-        const month = buffer.readUInt8(5);
-        const day = buffer.readUInt8(6);
-        const hour = buffer.readUInt8(7);
-        const minute = buffer.readUInt8(8);
-        const second = buffer.readUInt8(9);
+        const year = 2000 + buffer.readUInt8(4 + shift);
+        const month = buffer.readUInt8(5 + shift);
+        const day = buffer.readUInt8(6 + shift);
+        const hour = buffer.readUInt8(7 + shift);
+        const minute = buffer.readUInt8(8 + shift);
+        const second = buffer.readUInt8(9 + shift);
         
         // Satellite count (upper 4 bits of byte 10)
-        const satCount = (buffer.readUInt8(10) >> 4) & 0x0F;
+        const satCount = (buffer.readUInt8(10 + shift) >> 4) & 0x0F;
         
         // Check if GPS has a fix
         if (satCount === 0) {
@@ -429,15 +458,15 @@ function parseGT06Data(buffer) {
         }
         
         // Parse latitude (4 bytes at offset 11)
-        const latRaw = buffer.readUInt32BE(11);
+        const latRaw = buffer.readUInt32BE(11 + shift);
         let latitude = latRaw / 1800000.0;
         
         // Parse longitude (4 bytes at offset 15)
-        const lngRaw = buffer.readUInt32BE(15);
+        const lngRaw = buffer.readUInt32BE(15 + shift);
         let longitude = lngRaw / 1800000.0;
         
         // Course/status information (2 bytes at offset 19)
-        const course = buffer.readUInt16BE(19);
+        const course = buffer.readUInt16BE(19 + shift);
         
         // Extract hemisphere flags
         // GT06 Protocol: Bit 11 (0x0800) = 1 means West, Bit 10 (0x0400) = 1 means South
@@ -462,7 +491,7 @@ function parseGT06Data(buffer) {
         }
         
         // Speed (1 byte at offset 21)
-        const speed = buffer.readUInt8(21);
+        const speed = buffer.readUInt8(21 + shift);
         
         console.log('🛰️ Satellites:', satCount);
         console.log('🧭 Hemisphere:', isSouth ? 'S' : 'N', isWest ? 'W' : 'E');
@@ -619,15 +648,22 @@ const tcpServer = net.createServer((socket) => {
       }
       
       // Check start marker
-      if (packetBuffer[0] !== 0x78 || packetBuffer[1] !== 0x78) {
-        console.error('❌ Invalid start marker, clearing buffer');
-        packetBuffer = Buffer.alloc(0);
-        break;
+      const isShortHeader = packetBuffer[0] === 0x78 && packetBuffer[1] === 0x78;
+      const isLongHeader = packetBuffer[0] === 0x79 && packetBuffer[1] === 0x79;
+      if (!isShortHeader && !isLongHeader) {
+        console.error(`❌ Invalid start marker: ${packetBuffer[0].toString(16).padStart(2, '0')}${packetBuffer[1].toString(16).padStart(2, '0')} (resyncing)`);
+        // Drop one byte and retry so we do not lose a valid packet that starts later in the buffer.
+        packetBuffer = packetBuffer.slice(1);
+        continue;
       }
       
       // Get packet length
-      const length = packetBuffer[2];
-      const totalLength = length + 5; // length + start(2) + length(1) + crc(2) + stop(2) - 2
+      if (isLongHeader && packetBuffer.length < 6) {
+        break; // Wait for full 2-byte length
+      }
+
+      const length = isShortHeader ? packetBuffer.readUInt8(2) : packetBuffer.readUInt16BE(2);
+      const totalLength = isShortHeader ? (length + 5) : (length + 6);
       
       if (packetBuffer.length < totalLength) {
         console.log(`⏳ Waiting for complete packet (have ${packetBuffer.length}, need ${totalLength})`);
@@ -674,16 +710,21 @@ const tcpServer = net.createServer((socket) => {
             await location.save();
             console.log("✅ Location saved to MongoDB");
             
-            // Broadcast to all connected Socket.IO clients
-            io.emit("locationUpdate", {
+            const locationPayload = {
               deviceId: deviceIMEI,
               latitude: parsed.latitude,
               longitude: parsed.longitude,
               speed: parsed.speed,
               satellites: parsed.satellites,
               timestamp: location.time,
-            });
-            
+            };
+
+            // Broadcast to all connected Socket.IO clients
+            io.emit("locationUpdate", locationPayload);
+
+            // Relay to WebRTC-room peers so data channels carry it as backup
+            io.to("webrtc-location").emit("webrtc-bus-location", locationPayload);
+
             // Broadcast to specific bus subscribers
             io.to(`bus-${deviceIMEI}`).emit("busLocationUpdate", {
               busId: deviceIMEI,
