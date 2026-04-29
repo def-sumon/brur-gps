@@ -1,5 +1,4 @@
 const mongoose = require('mongoose');
-const bcrypt = require('bcryptjs');
 
 const FACULTY_DEPARTMENTS = {
   'Faculty of Arts': [
@@ -32,26 +31,24 @@ const FACULTY_DEPARTMENTS = {
 const ALL_DEPARTMENTS = Object.values(FACULTY_DEPARTMENTS).flat();
 const ALL_FACULTIES = Object.keys(FACULTY_DEPARTMENTS);
 
-function validatePassword(password) {
-  const errors = [];
-  if (password.length < 8) errors.push('at least 8 characters');
-  if (!/[A-Z]/.test(password)) errors.push('an uppercase letter');
-  if (!/[a-z]/.test(password)) errors.push('a lowercase letter');
-  if (!/[0-9]/.test(password)) errors.push('a number');
-  if (!/[!@#$%^&*(),.?":{}|<>_\-+=~`]/.test(password)) errors.push('a special character');
-  return { isValid: errors.length === 0, errors };
-}
-
 const userSchema = new mongoose.Schema({
+  googleId: {
+    type: String,
+    unique: true,
+    sparse: true,
+    trim: true,
+  },
+  email: {
+    type: String,
+    unique: true,
+    sparse: true,
+    trim: true,
+    lowercase: true,
+  },
   phoneNumber: {
     type: String,
-    required: true,
-    unique: true,
+    default: null,
     trim: true,
-    validate: {
-      validator: (v) => /^01[3-9]\d{8}$/.test(v),
-      message: (p) => `${p.value} is not a valid Bangladesh phone number`,
-    },
   },
   name: {
     type: String,
@@ -60,17 +57,23 @@ const userSchema = new mongoose.Schema({
     minlength: 2,
     maxlength: 100,
   },
+  photoUrl: {
+    type: String,
+    default: null,
+    trim: true,
+  },
   faculty: {
     type: String,
-    required: true,
     enum: ALL_FACULTIES,
+    default: null,
   },
   department: {
     type: String,
-    required: true,
     enum: ALL_DEPARTMENTS,
+    default: null,
     validate: {
       validator: function (dept) {
+        if (!dept) return true;
         const allowedDepts = FACULTY_DEPARTMENTS[this.faculty] || [];
         return allowedDepts.includes(dept);
       },
@@ -79,35 +82,26 @@ const userSchema = new mongoose.Schema({
   },
   session: {
     type: String,
-    required: true,
+    default: null,
     validate: {
-      validator: (v) => /^\d{4}-\d{4}$/.test(v),
+      validator: (v) => !v || /^\d{4}-\d{4}$/.test(v),
       message: 'Session must be in YYYY-YYYY format (e.g. 2020-2021)',
     },
   },
-  password: {
+  authProvider: {
     type: String,
-    required: true,
-    minlength: 8,
-    validate: {
-      validator: function (v) {
-        if (this.isModified('password') || this.isNew) {
-          const { isValid } = validatePassword(v);
-          return isValid;
-        }
-        return true;
-      },
-      message: 'Password must contain uppercase, lowercase, number and special character',
-    },
+    enum: ['google'],
+    default: 'google',
   },
+  profileCompleted: { type: Boolean, default: false },
 
-  // Verification
-  isVerified: { type: Boolean, default: false },
+  // Backward-compatible verification fields
+  isVerified: { type: Boolean, default: true },
   otp: { type: String, default: null },
   otpExpiry: { type: Date, default: null },
 
   // Admin approval
-  isApproved: { type: Boolean, default: false },
+  isApproved: { type: Boolean, default: true },
   approvedAt: { type: Date, default: null },
   approvedBy: { type: String, default: null },
 
@@ -116,25 +110,8 @@ const userSchema = new mongoose.Schema({
   fcmToken: { type: String, default: null },
 }, { timestamps: true });
 
-// Hash password
-userSchema.pre('save', async function (next) {
-  if (!this.isModified('password')) return next();
-  const { isValid, errors } = validatePassword(this.password);
-  if (!isValid) {
-    return next(new Error(`Password must include: ${errors.join(', ')}`));
-  }
-  const salt = await bcrypt.genSalt(12);
-  this.password = await bcrypt.hash(this.password, salt);
-  next();
-});
-
-userSchema.methods.comparePassword = async function (candidate) {
-  return bcrypt.compare(candidate, this.password);
-};
-
 userSchema.methods.toJSON = function () {
   const u = this.toObject();
-  delete u.password;
   delete u.otp;
   delete u.otpExpiry;
   return u;
@@ -144,4 +121,3 @@ userSchema.index({ isApproved: 1, isActive: 1 });
 
 module.exports = mongoose.model('User', userSchema);
 module.exports.FACULTY_DEPARTMENTS = FACULTY_DEPARTMENTS;
-module.exports.validatePassword = validatePassword;

@@ -12,7 +12,7 @@ const emergencyAlertSchema = new mongoose.Schema({
   },
   phoneNumber: {
     type: String,
-    required: true
+    default: ''
   },
   department: {
     type: String,

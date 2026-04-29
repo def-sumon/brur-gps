@@ -1,42 +1,107 @@
 const express = require('express');
 const router = express.Router();
-const crypto = require('crypto');
+const { OAuth2Client } = require('google-auth-library');
 const User = require('../models/User');
-const { FACULTY_DEPARTMENTS, validatePassword } = require('../models/User');
+const { FACULTY_DEPARTMENTS } = require('../models/User');
 const { generateToken, authenticate } = require('../middleware/auth');
 
-// ── OTP helpers ───────────────────────────────────────────────────────────────
+const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
-function generateOTP() {
-  return '123456';
-}
+// ── POST /api/auth/google-login ──────────────────────────────────────────────
 
-// In production replace with nodemailer / SMS gateway
-function sendOTP(phoneNumber, otp) {
-  console.log(`📱 OTP for ${phoneNumber}: ${otp}  (expires in 10 min)`);
-  // TODO: integrate Twilio or email service here
-}
-
-// ── POST /api/auth/register ───────────────────────────────────────────────────
-
-router.post('/register', async (req, res) => {
+router.post('/google-login', async (req, res) => {
   try {
-    const { phoneNumber, name, faculty, department, session, password } = req.body;
+    const { idToken } = req.body;
 
-    // Required fields
-    if (!phoneNumber || !name || !faculty || !department || !session || !password) {
-      return res.status(400).json({
-        success: false,
-        error: 'All fields are required',
-      });
+    if (!idToken) {
+      return res.status(400).json({ success: false, error: 'Google ID token is required' });
     }
 
-    // Faculty validation
+    const verifyOptions = { idToken };
+    if (process.env.GOOGLE_CLIENT_ID) {
+      verifyOptions.audience = process.env.GOOGLE_CLIENT_ID;
+    }
+
+    const ticket = await googleClient.verifyIdToken(verifyOptions);
+    const payload = ticket.getPayload();
+
+    if (!payload?.sub || !payload?.email) {
+      return res.status(401).json({ success: false, error: 'Invalid Google token payload' });
+    }
+
+    if (payload.email_verified === false) {
+      return res.status(403).json({ success: false, error: 'Google account email is not verified' });
+    }
+
+    const googleId = payload.sub;
+    const email = String(payload.email).toLowerCase();
+    const displayName = payload.name || email.split('@')[0];
+    const photoUrl = payload.picture || null;
+
+    let user = await User.findOne({
+      $or: [{ googleId }, { email }],
+    });
+    const isNewUser = !user;
+
+    if (!user) {
+      user = new User({
+        googleId,
+        email,
+        name: displayName,
+        photoUrl,
+        authProvider: 'google',
+        profileCompleted: false,
+        isVerified: true,
+        isApproved: true,
+        approvedAt: new Date(),
+        approvedBy: 'google-auth',
+      });
+    } else {
+      user.googleId = user.googleId || googleId;
+      user.email = email;
+      if (!user.name) user.name = displayName;
+      if (photoUrl) user.photoUrl = photoUrl;
+      user.lastLogin = new Date();
+    }
+
+    const hasAcademicProfile = Boolean(user.faculty && user.department && user.session);
+    user.profileCompleted = Boolean(user.profileCompleted && hasAcademicProfile);
+    await user.save();
+
+    const token = generateToken(user._id);
+
+    res.json({
+      success: true,
+      message: isNewUser
+        ? 'Google sign-in successful. Please complete your profile.'
+        : 'Google sign-in successful',
+      data: {
+        token,
+        user: user.toJSON(),
+        isNewUser,
+        requiresProfileCompletion: !user.profileCompleted,
+      },
+    });
+  } catch (error) {
+    console.error('Google login error:', error);
+    res.status(500).json({ success: false, error: 'Google login failed' });
+  }
+});
+
+// ── POST /api/auth/complete-profile ──────────────────────────────────────────
+
+router.post('/complete-profile', authenticate, async (req, res) => {
+  try {
+    const { name, faculty, department, session } = req.body;
+
+    if (!name || !faculty || !department || !session) {
+      return res.status(400).json({ success: false, error: 'All fields are required' });
+    }
+
     if (!FACULTY_DEPARTMENTS[faculty]) {
       return res.status(400).json({ success: false, error: 'Invalid faculty' });
     }
 
-    // Department must belong to faculty
     if (!FACULTY_DEPARTMENTS[faculty].includes(department)) {
       return res.status(400).json({
         success: false,
@@ -44,16 +109,6 @@ router.post('/register', async (req, res) => {
       });
     }
 
-    // Password strength
-    const { isValid, errors } = validatePassword(password);
-    if (!isValid) {
-      return res.status(400).json({
-        success: false,
-        error: `Weak password. Include: ${errors.join(', ')}`,
-      });
-    }
-
-    // Session format
     if (!/^\d{4}-\d{4}$/.test(session)) {
       return res.status(400).json({
         success: false,
@@ -61,174 +116,32 @@ router.post('/register', async (req, res) => {
       });
     }
 
-    // Duplicate check
-    const existing = await User.findOne({ phoneNumber });
-    if (existing) {
-      return res.status(400).json({
-        success: false,
-        error: 'Phone number already registered',
-      });
-    }
+    req.user.name = String(name).trim();
+    req.user.faculty = faculty;
+    req.user.department = department;
+    req.user.session = session;
+    req.user.profileCompleted = true;
+    req.user.isVerified = true;
+    req.user.isApproved = true;
+    req.user.approvedAt = req.user.approvedAt || new Date();
+    req.user.approvedBy = req.user.approvedBy || 'google-auth';
 
-    // Generate OTP
-    const otp = generateOTP();
-    const otpExpiry = new Date(Date.now() + 10 * 60 * 1000); // 10 min
+    await req.user.save();
 
-    const user = new User({
-      phoneNumber,
-      name,
-      faculty,
-      department,
-      session,
-      password,
-      otp,
-      otpExpiry,
-      isVerified: false,
-      isApproved: false,
-    });
-
-    await user.save();
-    sendOTP(phoneNumber, otp);
-
-    res.status(201).json({
+    res.json({
       success: true,
-      message: 'Registration started. Enter the OTP sent to your phone.',
-      data: { phoneNumber },
+      message: 'Profile completed successfully',
+      data: { user: req.user.toJSON() },
     });
   } catch (error) {
-    console.error('Registration error:', error);
+    console.error('Complete profile error:', error);
     if (error.name === 'ValidationError') {
       return res.status(400).json({
         success: false,
         error: Object.values(error.errors).map((e) => e.message).join(', '),
       });
     }
-    res.status(500).json({ success: false, error: 'Registration failed' });
-  }
-});
-
-// ── POST /api/auth/verify-otp ─────────────────────────────────────────────────
-
-router.post('/verify-otp', async (req, res) => {
-  try {
-    const { phoneNumber, otp } = req.body;
-    const otpInput = String(otp ?? '').trim();
-
-    if (!phoneNumber || !otpInput) {
-      return res.status(400).json({ success: false, error: 'Phone number and OTP required' });
-    }
-
-    const user = await User.findOne({ phoneNumber });
-    if (!user) {
-      return res.status(404).json({ success: false, error: 'User not found' });
-    }
-
-    if (user.isVerified) {
-      return res.status(400).json({ success: false, error: 'Account already verified' });
-    }
-
-    const storedOtp = String(user.otp ?? '').trim();
-    const isDefaultOtp = otpInput === '123456';
-    if ((!storedOtp || storedOtp !== otpInput) && !isDefaultOtp) {
-      return res.status(400).json({ success: false, error: 'Invalid OTP' });
-    }
-
-    if (user.otpExpiry && new Date() > user.otpExpiry) {
-      return res.status(400).json({ success: false, error: 'OTP expired. Request a new one.' });
-    }
-
-    user.isVerified = true;
-    user.isApproved = true;
-    user.approvedAt = new Date();
-    user.approvedBy = 'system';
-    user.otp = null;
-    user.otpExpiry = null;
-    await user.save();
-
-    res.json({
-      success: true,
-      message: 'Phone verified successfully. You can now log in.',
-      data: { status: 'verified' },
-    });
-  } catch (error) {
-    console.error('OTP verify error:', error);
-    res.status(500).json({ success: false, error: 'OTP verification failed' });
-  }
-});
-
-// ── POST /api/auth/resend-otp ─────────────────────────────────────────────────
-
-router.post('/resend-otp', async (req, res) => {
-  try {
-    const { phoneNumber } = req.body;
-    if (!phoneNumber) {
-      return res.status(400).json({ success: false, error: 'Phone number required' });
-    }
-
-    const user = await User.findOne({ phoneNumber });
-    if (!user) return res.status(404).json({ success: false, error: 'User not found' });
-    if (user.isVerified) {
-      return res.status(400).json({ success: false, error: 'Already verified' });
-    }
-
-    const otp = generateOTP();
-    user.otp = otp;
-    user.otpExpiry = new Date(Date.now() + 10 * 60 * 1000);
-    await user.save();
-    sendOTP(phoneNumber, otp);
-
-    res.json({ success: true, message: 'OTP resent successfully' });
-  } catch (error) {
-    res.status(500).json({ success: false, error: 'Failed to resend OTP' });
-  }
-});
-
-// ── POST /api/auth/login ──────────────────────────────────────────────────────
-
-router.post('/login', async (req, res) => {
-  try {
-    const { phoneNumber, password } = req.body;
-
-    if (!phoneNumber || !password) {
-      return res.status(400).json({ success: false, error: 'Phone number and password required' });
-    }
-
-    const user = await User.findOne({ phoneNumber });
-    if (!user) {
-      return res.status(401).json({ success: false, error: 'Invalid phone number or password' });
-    }
-
-    if (!user.isActive) {
-      return res.status(403).json({ success: false, error: 'Account is deactivated' });
-    }
-
-    const isValid = await user.comparePassword(password);
-    if (!isValid) {
-      return res.status(401).json({ success: false, error: 'Invalid phone number or password' });
-    }
-
-    // OTP verification gate
-    if (!user.isVerified) {
-      return res.status(403).json({
-        success: false,
-        error: 'Phone not verified',
-        data: { status: 'unverified', phoneNumber },
-      });
-    }
-
-    user.lastLogin = new Date();
-    await user.save();
-
-    const token = generateToken(user._id);
-
-    res.json({
-      success: true,
-      message: 'Login successful',
-      data: { user: user.toJSON(), token },
-    });
-  } catch (error) {
-    console.error('Login error:', error);
-    res.status(500).json({ success: false, error: 'Login failed' });
+    res.status(500).json({ success: false, error: 'Failed to complete profile' });
   }
 });
 
@@ -270,38 +183,6 @@ router.put('/profile', authenticate, async (req, res) => {
       });
     }
     res.status(500).json({ success: false, error: 'Failed to update profile' });
-  }
-});
-
-// ── PUT /api/auth/change-password ─────────────────────────────────────────────
-
-router.put('/change-password', authenticate, async (req, res) => {
-  try {
-    const { currentPassword, newPassword } = req.body;
-
-    if (!currentPassword || !newPassword) {
-      return res.status(400).json({ success: false, error: 'Both passwords required' });
-    }
-
-    const { isValid, errors } = validatePassword(newPassword);
-    if (!isValid) {
-      return res.status(400).json({
-        success: false,
-        error: `Weak password. Include: ${errors.join(', ')}`,
-      });
-    }
-
-    const isCurrentValid = await req.user.comparePassword(currentPassword);
-    if (!isCurrentValid) {
-      return res.status(401).json({ success: false, error: 'Current password is incorrect' });
-    }
-
-    req.user.password = newPassword;
-    await req.user.save();
-
-    res.json({ success: true, message: 'Password changed successfully' });
-  } catch (error) {
-    res.status(500).json({ success: false, error: 'Failed to change password' });
   }
 });
 

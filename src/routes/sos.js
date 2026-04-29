@@ -20,7 +20,7 @@ router.post("/create", authenticate, async (req, res) => {
     const alert = new EmergencyAlert({
       userId: req.user._id,
       userName: req.user.name,
-      phoneNumber: req.user.phoneNumber,
+      phoneNumber: req.user.phoneNumber || '',
       department: req.user.department,
       session: req.user.session,
       location: {
